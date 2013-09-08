@@ -1,0 +1,534 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>battle runner</title>
+<style>
+canvas {
+    position: absolute;
+    top: 0px;
+    left: 0px;
+    background: transparent;
+}
+#rotateplease {
+    display: none;
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: red;
+}
+@media screen and (orientation:portrait) {
+    #rotateplease {
+        display: block;
+    }
+}
+
+</style>
+</head>
+<body>
+<canvas width="568" height="280">
+Your browser does not support canvas. Please try again with a different browser.
+</canvas>
+<div id="rotateplease">rotate to landscape</div>
+<script>
+setTimeout(function() { window.scrollTo(0,1); }, 1);
+var game = {
+    last: (new Date()).getTime(),
+    sprites: [],
+
+    init: function() {
+        game.canvas = document.getElementsByTagName("canvas")[0];
+        game.context = game.canvas.getContext('2d');
+        game.canvasWidth = game.canvas.width;
+        game.canvasHeight = game.canvas.height;
+        game.newSprite("cityscape-far.png", {xspeed: 2, bottom: 0});
+        game.newSprite("cityscape-mid.png", {xspeed: 3, bottom: 0});
+        game.newSprite("cityscape-near.png", {xspeed: 4, bottom: 0});
+        game.newSprite("meter-base.png", {x: 204, y: 5, tiled: false});
+        game.pointer = game.newSprite("meter-pointer.png", {x: 287, y: 15, tiled: false, rotation: 0, targetRotation: 0});
+        game.man = game.newSprite("man_frames.png", {
+            tiled: false, bottom: 8, x: 60, frame: {x:0, y:0, width:50, height: 50}
+        });
+        game.enemy = game.newSprite("orc.png", {tiled: false, bottom: 8, x: game.canvasWidth, xspeed: 3, active: false, 
+            extraImages: ["explosion-frames.png"],
+            hitbox: {x: 3, y: 65, width: 40, height: 7}});
+        game.newSprite("grass.png", {bottom: 0, xspeed: 3});
+        game.speed = 1;
+        game.gravity = 1;
+        game.dead = false;
+        document.onkeypress = document.onmousedown = document.ontouchstart = function(e) {
+            if (game.dead) { location.reload(); return; }
+            if (game.enemy.active && game.man.y == game.man.basey) {
+                var diff = game.enemy.x - (game.man.x + game.man.hitbox.x + game.man.hitbox.width);
+                if (diff > 0 && diff < 70) {
+                    game.enemy.image = game.enemy.images["explosion-frames.png"];
+                    game.enemy.frame = {x:1, y:1, width: 64, height: 64};
+                    game.enemy.ethereal = true;
+                    game.pointer.targetRotation = Math.min(game.pointer.rotation + 10, 90);
+                    game.adjustMusicVolumes();
+                    return;
+                }
+            }
+            if (game.man.y == game.man.basey) {
+                var base_yaccel = 14;
+                if (game.pointer.rotation < -10) {
+                    base_yaccel += Math.round(-game.pointer.rotation / 7);
+                }
+                game.man.yaccel = base_yaccel;
+                game.pointer.targetRotation = Math.max(game.pointer.rotation - 10, -90);
+                game.adjustMusicVolumes();
+            }
+            e.preventDefault();
+        }
+        game.startAudio();
+        game.animate();
+    },
+
+    adjustMusicVolumes: function() {
+        // boring is loudest at rotation=0, and fades away to silent at -20 and 20
+        // flying is silent at 0 and starts at -10, loudest at -90
+        // punchy is silent at 0 and starts at 10, loudest at 90
+        var boring_volume, flying_volume, punchy_volume;
+        var p = game.pointer.targetRotation || game.pointer.rotation;
+        var ap = Math.abs(p);
+
+        if (ap > 20) {
+            boring_volume = 0;
+        } else {
+            boring_volume = 1 - (ap/20);
+        }
+
+        if (p > 10) {
+            punchy_volume = (p-10) / 80;
+        } else {
+            punchy_volume = 0;
+        }
+
+        if (p < -10) {
+            flying_volume = (ap-10) / 80;
+        } else {
+            flying_volume = 0;
+        }
+        game.audios.boring.gainNode.gain.value = boring_volume;
+        game.audios.flying.gainNode.gain.value = flying_volume;
+        game.audios.punchy.gainNode.gain.value = punchy_volume;
+    },
+
+    beginPlayingMusic: function() {
+        for (var k in game.audios) {
+            game.audios[k].source.start(0);
+        }
+    },
+
+    startAudio: function() {
+        window.AudioContext = window.AudioContext || window.webkitAudioContext;
+        game.actx = new AudioContext();
+        game.audios = {
+            boring: { url: "boring.ogg" },
+            punchy: { url: "punchy.ogg" },
+            flying: { url: "flying.ogg" }
+        };
+
+        function startSounds() {
+            // set up audio graph
+            for (var k in game.audios) {
+                (function(name, loaded_sound) {
+                    loaded_sound.source = game.actx.createBufferSource();
+                    loaded_sound.source.buffer = loaded_sound.buffer;
+                    loaded_sound.source.loop = true;
+                    loaded_sound.gainNode = game.actx.createGain();
+                    loaded_sound.source.connect(loaded_sound.gainNode);
+                    loaded_sound.gainNode.connect(game.actx.destination);
+                })(k, game.audios[k]);
+            }
+            game.adjustMusicVolumes();
+        }
+
+        function ifSoundsDoneProceed() {
+            var done = true;
+            for (var k in game.audios) {
+                if (game.audios[k].buffer === undefined) {
+                    done = false;
+                    break;
+                }
+            }
+            if (done) {
+                startSounds();
+            }
+        }
+
+        function loadAudioIntoBuffer(name, url, callback) {
+            var xhr = new XMLHttpRequest();
+            xhr.open("GET", url, true);
+            xhr.responseType = "arraybuffer";
+            xhr.onload = function() {
+                game.actx.decodeAudioData(xhr.response, function(buffer) {
+                    game.audios[name].buffer = buffer;
+                    callback();
+                }, function(e) {
+                    console.log("error loading audio into buffer", url, e);
+                });
+            }
+            xhr.send();
+        };
+
+        for (var k in game.audios) {
+            loadAudioIntoBuffer(k, game.audios[k].url, ifSoundsDoneProceed);
+        }
+    },
+
+    newSprite: function(name, options) {
+        var defaultOptions = {
+            tiled: true,
+            x: 0,
+            y: 0,
+            xspeed: 0,
+            yspeed: 0,
+            hasGravity: false,
+            yaccel: 0,
+            active: true,
+            hitbox: {x: 0, y: 0, height: 0, width: 0},
+            ethereal: false
+        };
+        var providedHitbox = options.hitbox !== undefined;
+        var i = new Image();
+        var dict = { name: name };
+        for (var k in defaultOptions) dict[k] = defaultOptions[k];
+        for (k in options) dict[k] = options[k];
+        i.onload = function() {
+            dict.width = i.naturalWidth;
+            dict.height = i.naturalHeight;
+            if (dict.frame !== undefined) {
+                dict.width = dict.frame.width;
+                dict.height = dict.frame.height;
+                dict.naturalWidth = i.naturalWidth;
+                dict.naturalHeight = i.naturalHeight;
+            }
+            if (!providedHitbox) {
+                dict.hitbox.width = dict.width;
+                dict.hitbox.height = dict.height;
+            }
+            if (dict.bottom !== undefined) dict.y = game.canvasHeight - dict.bottom - dict.height;
+            dict.basey = dict.y;
+        }
+        dict.image = i;
+        i.src = name;
+        if (options.extraImages) {
+            dict.images = {};
+            dict.images[name] = i;
+            options.extraImages.forEach(function(extraname) {
+                dict.images[extraname] = new Image();
+                dict.images[extraname].src = extraname;
+            });
+        }
+        game.sprites.push(dict);
+        return dict;
+    },
+
+    draw: function(sprite) {
+        if (!sprite.active) return;
+        if (sprite.rotation !== undefined) {
+            game.context.save();
+            game.context.translate(sprite.x + (sprite.width/2), sprite.y + sprite.height);
+            game.context.rotate(sprite.rotation * 3.141 / 180);
+            game.context.translate(-sprite.x - (sprite.width/2), -sprite.y-sprite.height);
+        }
+        if (sprite.frame !== undefined) {
+            game.context.drawImage(sprite.image, 
+                sprite.frame.x, sprite.frame.y, 
+                    sprite.frame.width, sprite.frame.height,
+                sprite.x, sprite.y,
+                    sprite.frame.width, sprite.frame.height
+                );
+        } else {
+            game.context.drawImage(sprite.image, sprite.x, sprite.y);
+        }
+        if (sprite.rotation !== undefined) {
+            game.context.restore();
+        }
+        if (sprite.tiled) {
+            for (var x=sprite.x; x<game.canvasWidth; x += sprite.width) {
+                game.context.drawImage(sprite.image, x, sprite.y);
+            }
+        }
+    },
+
+    move: function(sprite) {
+        if (sprite.xspeed) {
+            sprite.x -= sprite.xspeed * game.speed;
+            if (sprite.x < -sprite.width) sprite.x = 0;
+        }
+        if (sprite.yaccel) {
+            sprite.y -= sprite.yaccel;
+            sprite.yaccel -= game.gravity;
+            if (sprite.yaccel === 0) sprite.yaccel = -1;
+            if (sprite.y > sprite.basey) {
+                sprite.yaccel = 0;
+                sprite.y = sprite.basey;
+            }
+        }
+        if (sprite.rotation !== undefined && sprite.targetRotation != sprite.rotation) {
+            if (sprite.targetRotation < sprite.rotation) sprite.rotation -= 1;
+            if (sprite.targetRotation > sprite.rotation) sprite.rotation += 1;
+        }
+        if (sprite.frame !== undefined) {
+            sprite.frame.x += sprite.frame.width;
+            if (sprite.frame.x >= sprite.naturalWidth) {
+                sprite.frame.x = 0;
+                sprite.frame.y += sprite.frame.height;
+                if (sprite.frame.y >= sprite.naturalHeight) {
+                    sprite.frame.y = 0;
+                }
+            }
+        }
+    },
+
+    tick: function() {
+        game.speed += 0.01;
+        if (game.speed > 5) game.speed = 5;
+        if (!game.enemy.active && (Math.random() < 0.1)) {
+            game.enemy.ethereal = false;
+            game.enemy.image = game.enemy.images["orc.png"];
+            delete game.enemy.frame;
+            game.enemy.x = game.canvasWidth;
+            game.enemy.active = true;
+        }
+        if (game.enemy.active && game.enemy.x < 0) {
+            game.enemy.active = false;
+        }
+
+        // collide
+        if (game.enemy.active && !game.enemy.ethereal) {
+            var manxl = game.man.x + game.man.hitbox.x,
+                manxr = manxl + game.man.hitbox.width,
+                manyt = game.man.y + game.man.hitbox.y,
+                manyb = manyt + game.man.hitbox.height,
+                enemyxl = game.enemy.x + game.enemy.hitbox.x,
+                enemyxr = enemyxl + game.enemy.hitbox.width,
+                enemyyt = game.enemy.y + game.enemy.hitbox.y,
+                enemyyb = enemyyt + game.enemy.hitbox.height;
+            if ((manxl < enemyxr) && (manxr > enemyxl) &&
+                (manyt < enemyyb) && (manyb > enemyyt)) {
+                game.dead = true;
+                game.context.font = "150pt Ubuntu";
+                game.context.fillStyle = "red";
+                game.context.textBaseline = "top";
+                game.context.fillText("DEAD", 10, 10);
+            }
+        }
+    },
+
+    animate: function() {
+        if (game.dead) return;
+        requestAnimationFrame(game.animate);
+        game.canvas.width = game.canvas.width;
+        game.tick();
+        game.sprites.forEach(function(sprite) {
+            game.move(sprite);
+            game.draw(sprite);
+        })
+        var next = (new Date()).getTime();
+        var fps = 1000 / (next - game.last);
+        game.context.font = "10pt Ubuntu";
+        game.context.fillStyle = "black";
+        game.context.textBaseline = "top";
+        game.context.fillText("fps:" + fps.toFixed(2), 10, 10);
+        game.last = next;
+    }
+
+}
+
+
+/** 
+ * requestAnim shim layer by Paul Irish
+ * Finds the first API that works to optimize the animation loop, 
+ * otherwise defaults to setTimeout().
+ */
+window.requestAnimFrame = (function(){
+    return  window.requestAnimationFrame       || 
+            window.webkitRequestAnimationFrame || 
+            window.mozRequestAnimationFrame    || 
+            window.oRequestAnimationFrame      || 
+            window.msRequestAnimationFrame     || 
+            function(/* function */ callback, /* DOMElement */ element){
+                window.setTimeout(callback, 1000 / 60);
+            };
+})();
+
+game.init();
+</script>
+
+<xscript>
+<!--
+var game = new Game();
+
+function init() {
+    if(game.init())
+        game.start();
+}
+
+var imageRepository = new function() {
+    // Define images
+    this.empty = null;
+
+    this.background = new Image();    
+    this.background.src = "bg.png";
+
+    this.grass = new Image();    
+    this.grass.src = "grass.png";
+}
+
+
+/**
+ * Creates the Drawable object which will be the base class for
+ * all drawable objects in the game. Sets up defualt variables
+ * that all child objects will inherit, as well as the defualt
+ * functions. 
+ */
+function Drawable() {   
+    this.init = function(x, y) {
+        // Defualt variables
+        this.x = x;
+        this.y = y;
+    }
+
+    this.speed = 0;
+    this.canvasWidth = 0;
+    this.canvasHeight = 0;
+    
+    // Define abstract function to be implemented in child objects
+    this.draw = function() {
+    };
+}
+
+
+/**
+ * Creates the Background object which will become a child of
+ * the Drawable object. The background is drawn on the "background"
+ * canvas and creates the illusion of moving by panning the image.
+ */
+function Background() {
+    this.speed = 4; // Redefine speed of the background for panning
+    this.width = 600;
+    // Implement abstract function
+    this.draw = function() {
+        // Pan background
+        this.x -= this.speed;
+        this.context.drawImage(imageRepository.background, this.x, this.y);
+        
+        // Draw another image at the top edge of the first image
+        this.context.drawImage(imageRepository.background, this.x + this.canvasWidth, this.y);
+
+        // If the image scrolled off the screen, reset
+        if (this.x <= -this.width)
+            this.x = 0;
+    };
+}
+// Set Background to inherit properties from Drawable
+Background.prototype = new Drawable();
+
+function Grass() {
+    this.speed = 2;
+    this.width = 100;
+    this.y = this.canvasHeight - 19;
+    this.draw = function() {
+        this.x -= this.speed;
+        for (var xx=this.x; xx<this.canvasWidth; xx+=this.width) {
+            this.context.drawImage(imageRepository.grass, xx, this.y);
+        }
+        
+        // If the image scrolled off the screen, reset
+        if (this.x <= -this.width)
+            this.x = 0;
+    };
+}
+Grass.prototype = new Drawable();
+
+
+/**
+ * Creates the Game object which will hold all objects and data for
+ * the game.
+ */
+function Game() {
+    /*
+     * Gets canvas information and context and sets up all game
+     * objects. 
+     * Returns true if the canvas is supported and false if it
+     * is not. This is to stop the animation script from constantly
+     * running on older browsers.
+     */
+    this.init = function() {
+        // Get the canvas element
+        this.bgCanvas = document.getElementById('background');
+        
+        // Test to see if canvas is supported
+        if (this.bgCanvas.getContext) {
+            this.bgContext = this.bgCanvas.getContext('2d');
+        
+            // Initialize objects to contain their context and canvas
+            // information
+            Background.prototype.context = this.bgContext;
+            Background.prototype.canvasWidth = this.bgCanvas.width;
+            Background.prototype.canvasHeight = this.bgCanvas.height;
+            
+            Grass.prototype.context = this.bgContext;
+            Grass.prototype.canvasWidth = this.bgCanvas.width;
+            Grass.prototype.canvasHeight = this.bgCanvas.height;
+            
+            // Initialize the background object
+            this.background = new Background();
+            this.background.init(0,0); // Set draw point to 0,0
+            this.grass = new Grass();
+            this.grass.init(0,100);
+            return true;
+        } else {
+            return false;
+        }
+    };
+    
+    // Start the animation loop
+    this.start = function() {
+        animate();
+    };
+}
+
+
+/**
+ * The animation loop. Calls the requestAnimationFrame shim to
+ * optimize the game loop and draws all game objects. This
+ * function must be a gobal function and cannot be within an
+ * object.
+ */
+var last = (new Date()).getTime();
+function animate() {
+    requestAnimFrame( animate );
+    game.background.draw();
+    game.grass.draw();
+    var next = (new Date()).getTime();
+    var fps = 1000 / (next - last);
+    //console.log(fps);
+    last = next;
+}
+
+
+/** 
+ * requestAnim shim layer by Paul Irish
+ * Finds the first API that works to optimize the animation loop, 
+ * otherwise defaults to setTimeout().
+ */
+window.requestAnimFrame = (function(){
+    return  window.requestAnimationFrame       || 
+            window.webkitRequestAnimationFrame || 
+            window.mozRequestAnimationFrame    || 
+            window.oRequestAnimationFrame      || 
+            window.msRequestAnimationFrame     || 
+            function(/* function */ callback, /* DOMElement */ element){
+                window.setTimeout(callback, 1000 / 60);
+            };
+})();
+-->
+</xscript>
+</body>
+</html>
